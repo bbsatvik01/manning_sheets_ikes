@@ -86,8 +86,8 @@ STATIC_ROOT = os.path.join(RESOURCE_DIR, "static")
 if not os.path.isdir(STATIC_ROOT):
     STATIC_ROOT = os.path.join(BASE_DIR, "static")
 
-# Track outputs generated during this runtime
-SESSION_OUTPUTS: List[str] = []
+# Track outputs generated during this runtime (latest batch only)
+CURRENT_OUTPUTS: List[str] = []
 
 # Ensure directories exist
 os.makedirs(INPUT_DIR, exist_ok=True)
@@ -235,6 +235,14 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
 
     # For each date, produce a workbook
     for file_counter, (col_idx, date_label) in enumerate(zip(date_columns, date_labels), start=1):
+        try:
+            parsed_date = datetime.strptime(date_label, "%m/%d/%Y")
+            weekday_label = f" ({parsed_date.strftime('%A')})"
+            date_part = parsed_date.strftime("%a_%d_%b")
+        except ValueError:
+            parsed_date = None
+            weekday_label = ""
+            date_part = date_label.replace('/', '-').replace('-', '_')
         shift_data = [
             {category: [] for group in row_groups for category in group}
             for _ in shifts
@@ -285,12 +293,6 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
             sheet['A1'].font = Font(size=14, bold=True)
             sheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
             sheet.merge_cells('A2:C2')
-            weekday_label = ""
-            try:
-                parsed_date = datetime.strptime(date_label, "%m/%d/%Y")
-                weekday_label = f" ({parsed_date.strftime('%A')})"
-            except ValueError:
-                weekday_label = ""
             sheet['A2'] = f"Date: {date_label}{weekday_label}    Meal Periods: {shift_info['meal_periods']}    MOD:"
             sheet['A2'].alignment = Alignment(horizontal='left', vertical='center')
             for col_letter in ['A', 'B', 'C']:
@@ -315,8 +317,7 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
                 sheet.row_dimensions[row_ptr].height = 20
                 sheet.row_dimensions[data_row].height = 60
                 row_ptr += 2
-        safe_label = date_label.replace('/', '-')
-        out_filename = f"{generation_stamp}_{file_counter:02d}_Manning_Chart_{safe_label}.xlsx"
+        out_filename = f"{date_part}_Manning_sheet_{generation_stamp}.xlsx"
         out_path = os.path.join(output_dir, out_filename)
         try:
             out_wb.save(out_path)
@@ -413,9 +414,11 @@ def list_output_files() -> List[str]:
 @app.route('/', methods=['GET'])
 def index() -> str:
     """Render the upload form and list existing outputs."""
-    files = SESSION_OUTPUTS.copy()
-    total_generated = len(files)
-    latest_file = files[-1] if files else None
+    view_mode = request.args.get("view", "current")
+    show_history = view_mode == "history"
+    files = list_output_files() if show_history else CURRENT_OUTPUTS.copy()
+    total_generated = len(CURRENT_OUTPUTS)
+    latest_file = CURRENT_OUTPUTS[-1] if CURRENT_OUTPUTS else None
     assets = asset_urls()
     flashes = get_flashed_messages(with_categories=True)
     return render_template_string(
@@ -480,11 +483,20 @@ def index() -> str:
         <section class="app-card">
             <div class="section-header">
                 <div>
-                    <p class="eyebrow">Session files</p>
-                    <h2>Your generated Manning Sheets</h2>
-                    <p class="muted note">Files listed here were created in this session. All workbooks are still stored in <code>manning_sheets</code>.</p>
+                    <p class="eyebrow">{{ "History" if show_history else "Session files" }}</p>
+                    <h2>{{ "Generated Manning Sheets History" if show_history else "Your generated Manning Sheets" }}</h2>
+                    <p class="muted note">
+                        {% if show_history %}
+                        All previously generated workbooks are listed here.
+                        {% else %}
+                        Files listed here were created in this session. All workbooks are still stored in <code>manning_sheets</code>.
+                        {% endif %}
+                    </p>
                 </div>
-                <span class="stat-chip compact">{{ total_generated }} file(s)</span>
+                <div class="section-actions">
+                    <a class="btn btn-sm btn-outline" href="{{ url_for('index', view='history') }}">History</a>
+                    <a class="btn btn-sm btn-gradient" href="{{ url_for('index') }}">Current</a>
+                </div>
             </div>
             {% if files %}
             <div class="table-scroll">
@@ -509,7 +521,13 @@ def index() -> str:
                 </table>
             </div>
             {% else %}
-            <p class="file-empty">No Manning charts yet. Upload a schedule to kick things off.</p>
+            <p class="file-empty">
+                {% if show_history %}
+                No historical files found yet.
+                {% else %}
+                No Manning charts yet. Upload a schedule to kick things off.
+                {% endif %}
+            </p>
             {% endif %}
         </section>
     </main>
@@ -525,6 +543,7 @@ def index() -> str:
         latest_file=latest_file,
         base_css=BASE_CSS,
         flashes=flashes,
+        show_history=show_history,
         **assets,
     )
 
@@ -532,7 +551,7 @@ def index() -> str:
 @app.route('/upload', methods=['POST'])
 def upload() -> str:
     """Handle file upload, save to input directory, process it, and redirect."""
-    global SESSION_OUTPUTS
+    global CURRENT_OUTPUTS
     if 'file' not in request.files:
         flash("No file selected.", "error")
         return redirect(url_for('index'))
@@ -553,7 +572,7 @@ def upload() -> str:
     outputs = process_schedule_file(input_path, OUTPUT_DIR)
     if outputs:
         logging.info(f"Generated {len(outputs)} output file(s) from '{safe_filename}'.")
-        SESSION_OUTPUTS.extend(outputs)
+        CURRENT_OUTPUTS = outputs
         flash(f"Successfully generated {len(outputs)} chart(s).", "success")
     else:
         logging.warning(f"No output files generated from '{safe_filename}'.")
