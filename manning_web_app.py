@@ -176,6 +176,8 @@ def get_category(role: str) -> Optional[str]:
         return "UTILITY"
     if role_upper.startswith("CASHIER"):
         return "CASHIER"
+    if "SUPERVISOR" in role_upper:
+        return "SUPERVISOR"
     return None
 
 
@@ -283,7 +285,13 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
             sheet['A1'].font = Font(size=14, bold=True)
             sheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
             sheet.merge_cells('A2:C2')
-            sheet['A2'] = f"Date: {date_label}    Meal Periods: {shift_info['meal_periods']}    MOD:"
+            weekday_label = ""
+            try:
+                parsed_date = datetime.strptime(date_label, "%m/%d/%Y")
+                weekday_label = f" ({parsed_date.strftime('%A')})"
+            except ValueError:
+                weekday_label = ""
+            sheet['A2'] = f"Date: {date_label}{weekday_label}    Meal Periods: {shift_info['meal_periods']}    MOD:"
             sheet['A2'].alignment = Alignment(horizontal='left', vertical='center')
             for col_letter in ['A', 'B', 'C']:
                 sheet.column_dimensions[col_letter].width = 30
