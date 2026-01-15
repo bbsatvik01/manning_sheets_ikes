@@ -3,36 +3,8 @@ Manning Chart Web Application
 ============================
 
 This script provides a simple web interface for generating Manning Chart
-workbooks from staff scheduling spreadsheets.  When run (or packaged
-as a Windows executable with PyInstaller), it starts a local web
-server on `http://127.0.0.1:5000` and opens a page where you can
-upload schedule files, trigger processing, and download or view the
-resulting Manning Charts.  Uploaded schedule files are stored in
-``input_my_staff_schedule``, generated charts in ``manning_sheets``,
-and a log file is written to ``logs``.
-
-Requirements
-------------
-
-* ``flask`` for the web server.  Install it via ``pip install flask``.
-* ``openpyxl`` for reading and writing Excel files.
-
-Packaging as an executable
--------------------------
-
-You can package this script and its dependencies into a single
-executable using PyInstaller.  First install PyInstaller::
-
-    pip install pyinstaller
-
-Then create the executable::
-
-    pyinstaller --onefile manning_web_app.py
-
-The resulting ``manning_web_app.exe`` (found in the ``dist``
-directory) can be run on Windows without requiring Python to be
-pre‑installed.  Double‑clicking the executable will start the local
-server and open the upload page in your default web browser.
+workbooks from staff scheduling spreadsheets. It supports multiple locations
+(e.g., "Ikes" and "Southside") with configurable station mappings.
 
 """
 
@@ -43,7 +15,7 @@ import threading
 import logging
 import webbrowser
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from flask import (
     Flask,
@@ -60,6 +32,7 @@ from flask import (
 try:
     import openpyxl
     from openpyxl.styles import Font, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 except ImportError as exc:
     raise SystemExit(
         "Required dependency openpyxl is missing. Install with 'pip install openpyxl'."
@@ -86,6 +59,8 @@ STATIC_ROOT = os.path.join(RESOURCE_DIR, "static")
 if not os.path.isdir(STATIC_ROOT):
     STATIC_ROOT = os.path.join(BASE_DIR, "static")
 
+MAPPING_FILE = os.path.join(BASE_DIR, "Manning sheets mapping soutside.xlsx")
+
 # Track outputs generated during this runtime (latest batch only)
 CURRENT_OUTPUTS: List[str] = []
 
@@ -104,6 +79,44 @@ logging.basicConfig(
         logging.StreamHandler(),
     ],
 )
+
+# Locations configuration
+LOCATIONS = {
+    "ikes": {"name": "Ikes", "mapping_needed": False},
+    "southside": {"name": "Southside", "mapping_needed": True},
+}
+
+
+def load_southside_mapping(file_path: str) -> Dict[str, str]:
+    """Load role-to-station mapping from Excel file."""
+    mapping = {}
+    if not os.path.exists(file_path):
+        logging.warning(f"Mapping file not found at {file_path}. Using empty mapping.")
+        return mapping
+    
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        # Iterate over all sheets or just active? Prompt implied one mapping file.
+        # Let's check all sheets to be safe or just active.
+        # The inspection step showed "Sheet1".
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            for row in ws.iter_rows(values_only=True):
+                if not row or len(row) < 2:
+                    continue
+                role = str(row[0]).strip().replace("\n", "").strip()
+                station = str(row[1]).strip().replace("\n", "").strip()
+                if role and station:
+                    mapping[role.lower()] = station.upper()
+        logging.info(f"Loaded {len(mapping)} mappings from {file_path}")
+    except Exception as e:
+        logging.error(f"Error loading mapping file: {e}")
+    
+    return mapping
+
+
+# Global mapping cache
+SOUTHSIDE_MAPPING = load_southside_mapping(MAPPING_FILE)
 
 
 def parse_time(time_str: str) -> Optional[float]:
@@ -124,64 +137,129 @@ def parse_time(time_str: str) -> Optional[float]:
     return hour + minute / 60.0
 
 
-def get_category(role: str) -> Optional[str]:
-    """Map a job role to a Manning Chart category (station)."""
+# Additional mappings not in the Excel file
+FALLBACK_MAPPINGS = {
+    "am pasta": "LITTLE ITALY",
+}
+
+# Roles to strictly ignore (not count as missing assignments)
+IGNORED_ROLES = {
+    "scheduled elsewhere",
+}
+
+
+def get_category(role: str, location: str) -> Optional[str]:
+    """Map a job role to a Manning Chart category (station) based on location."""
     if not role:
         return None
     role_clean = role.strip().replace("\n", "").strip()
     role_upper = role_clean.upper()
 
-    # Student roles
-    if role_upper.startswith("STUDENT "):
-        if "HOMESTYLE" in role_upper:
+    if location == "southside":
+        # Check specific mapping first (exact match logic or clean match)
+        role_lower = role_clean.lower()
+        if role_lower in SOUTHSIDE_MAPPING:
+            return SOUTHSIDE_MAPPING[role_lower]
+        
+        # Check fallbacks
+        if role_lower in FALLBACK_MAPPINGS:
+            return FALLBACK_MAPPINGS[role_lower]
+        
+        return SOUTHSIDE_MAPPING.get(role_lower)
+
+    elif location == "ikes":
+        # Ikes Logic (Hardcoded as before)
+        # Student roles
+        if role_upper.startswith("STUDENT "):
+            if "HOMESTYLE" in role_upper:
+                return "HOMESTYLE ROOTED"
+            if "DWO" in role_upper:
+                return "DELICIOUS WITHOUT"
+            if "HOMESLICE" in role_upper:
+                return "HOMESLICE"
+            if "UNITED TABLE" in role_upper:
+                return "UNITED TABLE"
+            if "FLIPS" in role_upper:
+                return "FLIPS"
+            if "PIZZA/PASTA" in role_upper:
+                return "FLOUR SAUCE"
+            if "DESSERTS" in role_upper:
+                return "SWEET SHOPPE"
+            if "FOH" in role_upper:
+                return "BEVERAGES"
+            if "SALAD BAR" in role_upper:
+                return "GARDEN SOCIAL & NOOK"
+            if "UTILITY" in role_upper:
+                return "UTILITY"
+            if "SUPERVISOR" in role_upper:
+                return "SUPERVISOR"
+            return None
+
+        # Full‑time roles
+        if role_upper.startswith("PRODUCTION COOK"):
             return "HOMESTYLE ROOTED"
-        if "DWO" in role_upper:
+        if role_upper.startswith("DWO COOK"):
             return "DELICIOUS WITHOUT"
-        if "HOMESLICE" in role_upper:
-            return "HOMESLICE"
-        if "UNITED TABLE" in role_upper:
-            return "UNITED TABLE"
-        if "FLIPS" in role_upper:
+        if role_upper.startswith("FLIPS COOK"):
             return "FLIPS"
-        if "PIZZA/PASTA" in role_upper:
+        if role_upper.startswith("PIZZA COOK"):
             return "FLOUR SAUCE"
-        if "DESSERTS" in role_upper:
-            return "SWEET SHOPPE"
-        if "FOH" in role_upper:
-            return "BEVERAGES"
-        if "SALAD BAR" in role_upper:
+        if role_upper.startswith("UNITED TABLE COOK"):
+            return "UNITED TABLE"
+        if role_upper.startswith("DELI COOK"):
+            return "HOMESLICE"
+        if role_upper.startswith("COLD PREP COOK"):
             return "GARDEN SOCIAL & NOOK"
-        if "UTILITY" in role_upper:
+        if role_upper.startswith("UTILITY DISHROOM") or role_upper.startswith("UTILITY POTS") or role_upper.startswith("UTILITY FOH"):
             return "UTILITY"
+        if role_upper.startswith("CASHIER"):
+            return "CASHIER"
         if "SUPERVISOR" in role_upper:
             return "SUPERVISOR"
         return None
-
-    # Full‑time roles
-    if role_upper.startswith("PRODUCTION COOK"):
-        return "HOMESTYLE ROOTED"
-    if role_upper.startswith("DWO COOK"):
-        return "DELICIOUS WITHOUT"
-    if role_upper.startswith("FLIPS COOK"):
-        return "FLIPS"
-    if role_upper.startswith("PIZZA COOK"):
-        return "FLOUR SAUCE"
-    if role_upper.startswith("UNITED TABLE COOK"):
-        return "UNITED TABLE"
-    if role_upper.startswith("DELI COOK"):
-        return "HOMESLICE"
-    if role_upper.startswith("COLD PREP COOK"):
-        return "GARDEN SOCIAL & NOOK"
-    if role_upper.startswith("UTILITY DISHROOM") or role_upper.startswith("UTILITY POTS") or role_upper.startswith("UTILITY FOH"):
-        return "UTILITY"
-    if role_upper.startswith("CASHIER"):
-        return "CASHIER"
-    if "SUPERVISOR" in role_upper:
-        return "SUPERVISOR"
+    
     return None
 
 
-def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
+def get_stations_layout(location: str) -> List[List[str]]:
+    """Return the grid layout of stations for the Manning Sheet."""
+    if location == "southside":
+        # 5-column layout for Southside
+        known_stations = sorted(list(set(SOUTHSIDE_MAPPING.values())))
+        # Filter out None or empty
+        known_stations = [s for s in known_stations if s]
+        
+        # Create rows of 5
+        rows = []
+        chunk_size = 5
+        for i in range(0, len(known_stations), chunk_size):
+            rows.append(known_stations[i:i + chunk_size])
+        
+        if not rows:
+            rows = [['NO STATIONS MAPPED']]
+            
+        return rows
+
+    else:
+        # Ikes Layout
+        ikes_stations = [
+            'CASHIER', 'GARDEN SOCIAL & NOOK', 'LA CUCINA',
+            'FLOUR SAUCE', 'DELICIOUS WITHOUT', 'SWEET SHOPPE',
+            'UNITED TABLE', 'HOMESLICE', 'HOMESTYLE ROOTED',
+            'FLIPS', 'CULINARY', 'UTILITY',
+            'BEVERAGES', 'TABLE BUSSER', 'SUPERVISOR'
+        ]
+        
+        # Create rows of 5
+        rows = []
+        chunk_size = 5
+        for i in range(0, len(ikes_stations), chunk_size):
+            rows.append(ikes_stations[i:i + chunk_size])
+            
+        return rows
+
+
+def process_schedule_file(file_path: str, output_dir: str, location: str = "ikes") -> List[str]:
     """Process a single schedule Excel file and generate Manning Charts.
 
     Returns a list of output file paths created.
@@ -215,21 +293,23 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
         logging.warning(f"No valid date columns in '{file_path}'.")
         return outputs
 
-    # Shift definitions: inclusive boundaries
-    shifts = [
-        {'name': '6am-2pm', 'meal_periods': 'B BR', 'lower': 6, 'upper': 14},  # 6 ≤ start < 14
-        {'name': '2pm-11pm', 'meal_periods': 'D', 'lower': 14, 'upper': 22},    # 14 ≤ start < 22
-        {'name': '10pm-6am', 'meal_periods': 'OVNT', 'lower': 22, 'upper': 24}, # start ≥22 or start <6
-    ]
+    # Shift definitions based on location
+    if location == "southside":
+        shifts = [
+            {'name': '5.30am-3.00pm', 'meal_periods': 'B L', 'lower': 5.5, 'upper': 15.0},
+            {'name': '3.00pm-11.30pm', 'meal_periods': 'D', 'lower': 15.0, 'upper': 23.5},
+        ]
+    else:
+        # Ikes default shifts
+        shifts = [
+            {'name': '6am-2pm', 'meal_periods': 'B BR', 'lower': 6.0, 'upper': 14.0},
+            {'name': '2pm-11pm', 'meal_periods': 'D', 'lower': 14.0, 'upper': 22.0},
+            {'name': '10pm-6am', 'meal_periods': 'OVNT', 'lower': 22.0, 'upper': 24.0}, 
+        ]
 
     # Chart row layout
-    row_groups = [
-        ['CASHIER', 'GARDEN SOCIAL & NOOK', 'LA CUCINA'],
-        ['FLOUR SAUCE', 'DELICIOUS WITHOUT', 'SWEET SHOPPE'],
-        ['UNITED TABLE', 'HOMESLICE', 'HOMESTYLE ROOTED'],
-        ['FLIPS', 'CULINARY', 'UTILITY'],
-        ['BEVERAGES', 'TABLE BUSSER', 'SUPERVISOR'],
-    ]
+    row_groups = get_stations_layout(location)
+    location_name = LOCATIONS.get(location, {}).get("name", location.title())
 
     generation_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -243,20 +323,32 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
             parsed_date = None
             weekday_label = ""
             date_part = date_label.replace('/', '-').replace('-', '_')
+        
         shift_data = [
             {category: [] for group in row_groups for category in group}
             for _ in shifts
         ]
+        
+        # Metrics for verification
+        total_assignments_found = 0
+        mapped_assignments_found = 0
+        unmapped_roles_list = set()
+
         for row in ws.iter_rows(min_row=3, values_only=True):
             role = row[0]
             cell_val = row[col_idx]
             if not cell_val:
                 continue
-            category = get_category(str(role))
-            if not category:
-                continue
+            
+            category = get_category(str(role), location)
+            
+            # Count potential assignments in this cell
             cell_str = str(cell_val).strip()
             assignments = [s for s in re.split(r"\n{2,}", cell_str) if s.strip()]
+            
+            # Temporary list to hold valid assignments found in this cell
+            valid_assignments_in_cell = []
+
             i = 0
             while i < len(assignments):
                 if i + 1 < len(assignments):
@@ -271,34 +363,98 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
                 )
                 if not m:
                     continue
+                
+                # Check if valid time parse
                 start_time = parse_time(m.group(1))
                 if start_time is None:
                     continue
-                if 6 <= start_time < 14:
-                    shift_index = 0
-                elif 14 <= start_time < 22:
-                    shift_index = 1
+                
+                # Check if role is ignored
+                if str(role).strip().replace("\n", "").strip().lower() in IGNORED_ROLES:
+                    continue
+
+                total_assignments_found += 1
+                valid_assignments_in_cell.append((name, m, start_time))
+
+            if not category:
+                # If role is not mapped, all assignments in this cell are unmapped
+                if valid_assignments_in_cell:
+                    unmapped_roles_list.add(str(role))
+                continue
+            
+            # Ensure category exists in layout
+            found_layout = False
+            for grp in row_groups:
+                if category in grp:
+                    found_layout = True
+                    break
+            
+            if not found_layout:
+                if valid_assignments_in_cell:
+                    logging.warning(f"Role '{role}' mapped to '{category}' which is not in the layout.")
+                continue
+
+            # Process valid assignments
+            for name, m, start_time in valid_assignments_in_cell:
+                # Assign to shift based on start time
+                shift_index = -1
+                
+                if location == 'southside':
+                    # Simple range check
+                    for idx, s in enumerate(shifts):
+                        if s['lower'] <= start_time < s['upper']:
+                            shift_index = idx
+                            break
+                        # Handle potential edge case where 11:30pm might be exactly 23.5
                 else:
-                    shift_index = 2
-                entry = f"{name}\n{m.group(1)} - {m.group(2)}"
-                shift_data[shift_index][category].append(entry)
+                    # Ikes logic (legacy behavior preservation)
+                    if 6 <= start_time < 14:
+                        shift_index = 0
+                    elif 14 <= start_time < 22:
+                        shift_index = 1
+                    else:
+                        shift_index = 2
+
+                if shift_index != -1:
+                    # check if category in that shift's dict (it should be initialized for all)
+                    if category in shift_data[shift_index]:
+                        entry = f"{name}\n{m.group(1)} - {m.group(2)}"
+                        shift_data[shift_index][category].append(entry)
+                        mapped_assignments_found += 1
+        
+        logging.info(f"Verification for {date_label}: Found {total_assignments_found} assignments. Mapped {mapped_assignments_found}.")
+        if unmapped_roles_list:
+            logging.warning(f"Unmapped roles with assignments: {list(unmapped_roles_list)}")
+        if total_assignments_found != mapped_assignments_found:
+             logging.warning(f"Mismatch in assignment counts! Missing {total_assignments_found - mapped_assignments_found} assignments.")
 
         # Create output workbook
         out_wb = openpyxl.Workbook()
         out_wb.remove(out_wb.active)
         for idx_shift, shift_info in enumerate(shifts):
             sheet = out_wb.create_sheet(shift_info['name'])
-            sheet.merge_cells('A1:C1')
-            sheet['A1'] = 'MANNING CHART'
+            # Calculate max columns dynamically
+            max_cols = max(len(grp) for grp in row_groups) if row_groups else 1
+            if max_cols < 3: max_cols = 3 
+            
+            from openpyxl.utils import get_column_letter
+            end_col_letter = get_column_letter(max_cols)
+
+            sheet.merge_cells(f'A1:{end_col_letter}1')
+            sheet['A1'] = f'MANNING CHART - {location_name.upper()}'
             sheet['A1'].font = Font(size=14, bold=True)
             sheet['A1'].alignment = Alignment(horizontal='center', vertical='center')
-            sheet.merge_cells('A2:C2')
+            
+            sheet.merge_cells(f'A2:{end_col_letter}2')
             sheet['A2'] = f"Date: {date_label}{weekday_label}    Meal Periods: {shift_info['meal_periods']}    MOD:"
             sheet['A2'].alignment = Alignment(horizontal='left', vertical='center')
-            for col_letter in ['A', 'B', 'C']:
-                sheet.column_dimensions[col_letter].width = 30
+            
+            for c_idx in range(1, max_cols + 1):
+                sheet.column_dimensions[get_column_letter(c_idx)].width = 30
+            
             thin = Side(border_style='thin', color='000000')
             border = Border(left=thin, right=thin, top=thin, bottom=thin)
+            
             row_ptr = 3
             for group in row_groups:
                 for col, label in enumerate(group, start=1):
@@ -307,6 +463,7 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
                     hcell.font = Font(bold=True)
                     hcell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                     hcell.border = border
+                
                 data_row = row_ptr + 1
                 for col, label in enumerate(group, start=1):
                     dcell = sheet.cell(row=data_row, column=col)
@@ -314,10 +471,12 @@ def process_schedule_file(file_path: str, output_dir: str) -> List[str]:
                     dcell.value = '\n\n'.join(items) if items else ''
                     dcell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
                     dcell.border = border
+                
                 sheet.row_dimensions[row_ptr].height = 20
                 sheet.row_dimensions[data_row].height = 60
                 row_ptr += 2
-        out_filename = f"{date_part}_Manning_sheet_{generation_stamp}.xlsx"
+                
+        out_filename = f"{date_part}_{location_name}_Manning_sheet_{generation_stamp}.xlsx"
         out_path = os.path.join(output_dir, out_filename)
         try:
             out_wb.save(out_path)
@@ -338,6 +497,37 @@ app.secret_key = os.environ.get("MANNING_APP_SECRET", "manning-standalone-secret
 
 BASE_CSS = """
 /* UI styling lives in static/assets/css. Inline rules reserved for quick overrides. */
+.location-toggle {
+    margin-bottom: 30px;
+    display: flex;
+    justify-content: center;
+    gap: 0;
+}
+.location-toggle .btn {
+    min-width: 160px;
+    border-radius: 0;
+    border: 1px solid rgba(255,255,255,0.1);
+}
+.location-toggle .btn:first-child {
+    border-top-left-radius: 30px;
+    border-bottom-left-radius: 30px;
+}
+.location-toggle .btn:last-child {
+    border-top-right-radius: 30px;
+    border-bottom-right-radius: 30px;
+}
+.location-toggle .btn-secondary {
+    background: transparent;
+    color: rgba(255,255,255,0.7);
+}
+.location-toggle .btn-primary {
+    background: #e14eca;
+    background-image: linear-gradient(to bottom left, #e14eca, #ba54f5, #e14eca);
+    background-size: 210% 210%;
+    background-position: top right;
+    border-color: transparent;
+    box-shadow: 0px 0px 20px 0px rgba(186, 84, 245, 0.5);
+}
 """
 
 
@@ -378,28 +568,46 @@ def build_sheet_structure(ws: "openpyxl.worksheet.worksheet.Worksheet") -> Dict[
     rows = list(ws.iter_rows(values_only=True))
     stations: List[Dict[str, Any]] = []
     excel_sections: List[Dict[str, List[str]]] = []
+    
     row_idx = 2  # first two rows are header/meta rows
+    
     while row_idx < len(rows):
         header_row = rows[row_idx]
         data_row = rows[row_idx + 1] if row_idx + 1 < len(rows) else None
-        if header_row and any(header_row[:3]) and data_row is not None:
+        
+        if header_row and data_row is not None:
+             # Find how many columns have content in header
+            col_count = len(header_row)
+            
             headers: List[str] = []
             cells: List[str] = []
-            for col_idx in range(3):
-                header_val = header_row[col_idx] if col_idx < len(header_row) else None
+            
+            has_content = False
+            for col_idx in range(col_count):
+                header_val = header_row[col_idx]
                 station_name = str(header_val).strip() if header_val else ""
+                
+                # Simple heuristic: stop if several empty headers in a row or use all?
+                # We'll rely on the fact that these are generated sheets with borders.
+                
                 headers.append(station_name)
-                if not station_name:
-                    cells.append(str(data_row[col_idx]) if data_row and col_idx < len(data_row) and data_row[col_idx] else "")
-                    continue
+                
                 cell_val = data_row[col_idx] if col_idx < len(data_row) else None
-                assignments = parse_cell_assignments(cell_val)
-                stations.append({"station": station_name, "entries": assignments})
-                cells.append(str(cell_val) if cell_val else "")
-            excel_sections.append({"headers": headers, "cells": cells})
-            row_idx += 2
-            continue
+                assignment_text = str(cell_val) if cell_val else ""
+                cells.append(assignment_text)
+                
+                if station_name:
+                    has_content = True
+                    parsed = parse_cell_assignments(cell_val)
+                    stations.append({"station": station_name, "entries": parsed})
+
+            if has_content:
+                excel_sections.append({"headers": headers, "cells": cells})
+                row_idx += 2
+                continue
+        
         row_idx += 1
+            
     total_entries = sum(len(station["entries"]) for station in stations)
     return {"stations": stations, "total_entries": total_entries, "excel_sections": excel_sections}
 
@@ -415,19 +623,29 @@ def list_output_files() -> List[str]:
 def index() -> str:
     """Render the upload form and list existing outputs."""
     view_mode = request.args.get("view", "current")
+    location = request.args.get("location", "ikes") # Default to Ikes
+    
+    # Validate location
+    if location not in LOCATIONS:
+        location = "ikes"
+    
     show_history = view_mode == "history"
     files = list_output_files() if show_history else CURRENT_OUTPUTS.copy()
     total_generated = len(CURRENT_OUTPUTS)
     latest_file = CURRENT_OUTPUTS[-1] if CURRENT_OUTPUTS else None
     assets = asset_urls()
     flashes = get_flashed_messages(with_categories=True)
+    
+    location_name = LOCATIONS[location]["name"]
+    title = f"Manning Sheets {location_name}"
+
     return render_template_string(
         """
 <!doctype html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Manning Chart Generator</title>
+    <title>{{ title }}</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -449,16 +667,25 @@ def index() -> str:
         <div class="page-heading">
             <h1>Manning Chart Generator</h1>
         </div>
+        
+        <div class="location-toggle">
+            <div class="btn-group" role="group" aria-label="Location Toggle">
+                <a href="{{ url_for('index', location='ikes', view=view_mode) }}" class="btn btn-{{ 'primary' if location == 'ikes' else 'secondary' }}">Manning Sheets Ikes</a>
+                <a href="{{ url_for('index', location='southside', view=view_mode) }}" class="btn btn-{{ 'primary' if location == 'southside' else 'secondary' }}">Manning Sheets Southside</a>
+            </div>
+        </div>
+
         <div class="hero-row">
             <div class="hero-cell col-3 hero-desc">
                 <p class="eyebrow">Automated coverage</p>
-                <h2>Manning Chart Generator</h2>
-                <p class="muted">Upload the latest <strong>.xlsx</strong> schedule. We keep the raw file in <code>input_my_staff_schedule</code> and save processed shifts inside <code>manning_sheets</code>.</p>
+                <h2>{{ title }}</h2>
+                <p class="muted">Upload the latest <strong>.xlsx</strong> schedule for <strong>{{ location_name }}</strong>. We keep the raw file in <code>input_my_staff_schedule</code> and save processed shifts inside <code>manning_sheets</code>.</p>
             </div>
             <div class="hero-cell col-6 hero-upload">
                 <p class="eyebrow text-center">Upload schedule</p>
                 <h2 class="text-center">Generate new Manning sheets</h2>
                 <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data" class="upload-form centered">
+                    <input type="hidden" name="location" value="{{ location }}">
                     <label for="file-input" class="muted">Drop or browse for a MyStaff Excel export (.xlsx)</label>
                     <input id="file-input" type="file" name="file" accept=".xlsx" required class="app-file-input">
                     <button type="submit" class="btn btn-primary btn-gradient">Upload &amp; Generate Charts</button>
@@ -494,8 +721,8 @@ def index() -> str:
                     </p>
                 </div>
                 <div class="section-actions">
-                    <a class="btn btn-sm btn-outline" href="{{ url_for('index', view='history') }}">History</a>
-                    <a class="btn btn-sm btn-gradient" href="{{ url_for('index') }}">Current</a>
+                    <a class="btn btn-sm btn-outline" href="{{ url_for('index', view='history', location=location) }}">History</a>
+                    <a class="btn btn-sm btn-gradient" href="{{ url_for('index', view='current', location=location) }}">Current</a>
                 </div>
             </div>
             {% if files %}
@@ -544,6 +771,10 @@ def index() -> str:
         base_css=BASE_CSS,
         flashes=flashes,
         show_history=show_history,
+        title=title,
+        location=location,
+        location_name=location_name,
+        view_mode=view_mode,
         **assets,
     )
 
@@ -552,16 +783,19 @@ def index() -> str:
 def upload() -> str:
     """Handle file upload, save to input directory, process it, and redirect."""
     global CURRENT_OUTPUTS
+    
+    location = request.form.get("location", "ikes")
+    
     if 'file' not in request.files:
         flash("No file selected.", "error")
-        return redirect(url_for('index'))
+        return redirect(url_for('index', location=location))
     file = request.files['file']
     if file.filename == '':
         flash("Please choose a file before uploading.", "error")
-        return redirect(url_for('index'))
+        return redirect(url_for('index', location=location))
     if not file.filename.lower().endswith('.xlsx'):
         flash("Only .xlsx files are supported. Upload the MyStaff shift schedule exported in Task Wise view (.xlsx).", "error")
-        return redirect(url_for('index'))
+        return redirect(url_for('index', location=location))
     # Save the uploaded file with a timestamp to avoid collisions
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     safe_filename = f"{timestamp}_{os.path.basename(file.filename)}"
@@ -569,7 +803,7 @@ def upload() -> str:
     file.save(input_path)
     logging.info(f"Uploaded schedule saved to '{input_path}'.")
     # Process the uploaded schedule
-    outputs = process_schedule_file(input_path, OUTPUT_DIR)
+    outputs = process_schedule_file(input_path, OUTPUT_DIR, location=location)
     if outputs:
         logging.info(f"Generated {len(outputs)} output file(s) from '{safe_filename}'.")
         CURRENT_OUTPUTS = outputs
@@ -578,7 +812,7 @@ def upload() -> str:
         logging.warning(f"No output files generated from '{safe_filename}'.")
         flash("Unable to process that file. Upload the MyStaff shift schedule exported in Task Wise view (.xlsx) and try again.", "error")
     # Redirect to index to show new files
-    return redirect(url_for('index'))
+    return redirect(url_for('index', location=location))
 
 
 @app.route('/download/<path:filename>')
@@ -676,20 +910,22 @@ def view_file(filename: str):
             </div>
             <div class="excel-view">
                 <p class="eyebrow">Excel layout</p>
-                <table class="excel-table">
-                    {% for block in table.excel_sections %}
-                        <tr>
-                            {% for header in block.headers %}
-                                <th>{{ header }}</th>
-                            {% endfor %}
-                        </tr>
-                        <tr>
-                            {% for cell in block.cells %}
-                                <td>{% if cell %}{{ cell.replace('\\n', '<br>')|safe }}{% else %}&nbsp;{% endif %}</td>
-                            {% endfor %}
-                        </tr>
-                    {% endfor %}
-                </table>
+                <div style="overflow-x: auto;">
+                    <table class="excel-table">
+                        {% for block in table.excel_sections %}
+                            <tr>
+                                {% for header in block.headers %}
+                                    <th>{{ header }}</th>
+                                {% endfor %}
+                            </tr>
+                            <tr>
+                                {% for cell in block.cells %}
+                                    <td>{% if cell %}{{ cell.replace('\\n', '<br>')|safe }}{% else %}&nbsp;{% endif %}</td>
+                                {% endfor %}
+                            </tr>
+                        {% endfor %}
+                    </table>
+                </div>
             </div>
             <div class="table-scroll table-view" id="table-{{ loop.index0 }}">
                 <table class="viewer-table tidy">
@@ -798,75 +1034,33 @@ document.addEventListener('DOMContentLoaded', () => {
 def view_log() -> str:
     """Display the log file in the browser."""
     try:
-        with open(log_filename, 'r', encoding='utf-8') as f:
+        with open(log_filename, "r", encoding="utf-8") as f:
             content = f.read()
     except Exception as exc:
-        return f"Error reading log file: {exc}", 500
-
-    assets = asset_urls()
+        content = f"Error reading log: {exc}"
     return render_template_string(
         """
 <!doctype html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="utf-8">
-    <title>Processing Log</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap">
-    <link rel="stylesheet" href="{{ css_black }}">
-    <link rel="stylesheet" href="{{ css_custom }}">
-    <link rel="stylesheet" href="{{ css_icons }}">
-    <style>{{ base_css }}</style>
+    <title>System Log</title>
+    <style>body{background:#1e1e2f;color:#e1e4e8;font-family:monospace;padding:20px;white-space:pre-wrap;}</style>
 </head>
-<body class="log-shell">
-<div class="viewer-content">
-    <div class="viewer-actions">
-        <a class="file-action" href="{{ url_for('index') }}">&larr; Back to dashboard</a>
-    </div>
-    <section class="app-card viewer-hero">
-        <div>
-            <p class="eyebrow">Diagnostics</p>
-            <h1>Processing Log</h1>
-            <p class="muted">Trace every upload, validation, and workbook that the generator touched.</p>
-        </div>
-        <div class="viewer-meta">
-            <div class="stat-chip">
-                <span>Log file</span>
-                <strong>{{ log_name }}</strong>
-            </div>
-        </div>
-    </section>
-    <section class="app-card">
-        <pre class="log-terminal">{{ content }}</pre>
-    </section>
-</div>
-<script src="{{ js_jquery }}"></script>
-<script src="{{ js_popper }}"></script>
-<script src="{{ js_bootstrap }}"></script>
-<script src="{{ js_black }}"></script>
-</body>
+<body>{{ content }}</body>
 </html>
         """,
         content=content,
-        base_css=BASE_CSS,
-        log_name=os.path.basename(log_filename),
-        **assets,
     )
 
 
-def open_browser():
-    """Open the default web browser to the main page."""
-    try:
-        webbrowser.open("http://127.0.0.1:5000", new=2)
-    except Exception:
-        # Ignore failures to open browser
-        pass
-
-
 if __name__ == '__main__':
-    # Start browser in a separate thread after server launch
-    threading.Timer(1.0, open_browser).start()
-    logging.info("Starting Manning Chart web server on http://127.0.0.1:5000 ...")
-    app.run(host='127.0.0.1', port=5000, debug=False)
+    open_browser = True
+    if len(sys.argv) > 1 and sys.argv[1] == '--no-browser':
+        open_browser = False
+
+    # Start the server
+    port = int(os.environ.get("PORT", 5000))
+    if open_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(f"http://127.0.0.1:{port}")).start()
+    
+    app.run(host='0.0.0.0', port=port)

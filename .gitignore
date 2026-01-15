@@ -1,0 +1,17 @@
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Local Data
+*.xlsx
+input_my_staff_schedule/
+manning_sheets/
+output_verification/
+logs/
+
+# Debug scripts
+debug_mappings.py
+inspect_excel.py
+verify_assignments.py
