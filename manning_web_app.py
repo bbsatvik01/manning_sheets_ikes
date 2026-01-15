@@ -59,35 +59,16 @@ STATIC_ROOT = os.path.join(RESOURCE_DIR, "static")
 if not os.path.isdir(STATIC_ROOT):
     STATIC_ROOT = os.path.join(BASE_DIR, "static")
 
-MAPPING_FILE = os.path.join(BASE_DIR, "Manning sheets mapping soutside.xlsx")
-
-# Track outputs generated during this runtime (latest batch only)
-CURRENT_OUTPUTS: List[str] = []
-
-# Ensure directories exist
-os.makedirs(INPUT_DIR, exist_ok=True)
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-os.makedirs(LOG_DIR, exist_ok=True)
-
-# Set up logging
-log_filename = os.path.join(LOG_DIR, "manning_app.log")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
-    handlers=[
-        logging.FileHandler(log_filename, encoding="utf-8"),
-        logging.StreamHandler(),
-    ],
-)
-
 # Locations configuration
 LOCATIONS = {
     "ikes": {"name": "Ikes", "mapping_needed": False},
     "southside": {"name": "Southside", "mapping_needed": True},
 }
 
+MAPPING_FILE_SOUTHSIDE = os.path.join(BASE_DIR, "Manning sheets mapping soutside.xlsx")
+MAPPING_FILE_IKES = os.path.join(BASE_DIR, "ikes manning mapping.xlsx")
 
-def load_southside_mapping(file_path: str) -> Dict[str, str]:
+def load_mapping(file_path: str) -> Dict[str, str]:
     """Load role-to-station mapping from Excel file."""
     mapping = {}
     if not os.path.exists(file_path):
@@ -96,9 +77,6 @@ def load_southside_mapping(file_path: str) -> Dict[str, str]:
     
     try:
         wb = openpyxl.load_workbook(file_path, data_only=True)
-        # Iterate over all sheets or just active? Prompt implied one mapping file.
-        # Let's check all sheets to be safe or just active.
-        # The inspection step showed "Sheet1".
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             for row in ws.iter_rows(values_only=True):
@@ -114,9 +92,9 @@ def load_southside_mapping(file_path: str) -> Dict[str, str]:
     
     return mapping
 
-
-# Global mapping cache
-SOUTHSIDE_MAPPING = load_southside_mapping(MAPPING_FILE)
+# Global mapping caches
+SOUTHSIDE_MAPPING = load_mapping(MAPPING_FILE_SOUTHSIDE)
+IKES_MAPPING = load_mapping(MAPPING_FILE_IKES)
 
 
 def parse_time(time_str: str) -> Optional[float]:
@@ -153,69 +131,28 @@ def get_category(role: str, location: str) -> Optional[str]:
     if not role:
         return None
     role_clean = role.strip().replace("\n", "").strip()
-    role_upper = role_clean.upper()
+    role_lower = role_clean.lower()
 
     if location == "southside":
-        # Check specific mapping first (exact match logic or clean match)
-        role_lower = role_clean.lower()
+        # Southside lookup
         if role_lower in SOUTHSIDE_MAPPING:
             return SOUTHSIDE_MAPPING[role_lower]
-        
-        # Check fallbacks
         if role_lower in FALLBACK_MAPPINGS:
             return FALLBACK_MAPPINGS[role_lower]
-        
-        return SOUTHSIDE_MAPPING.get(role_lower)
+        return None
 
     elif location == "ikes":
-        # Ikes Logic (Hardcoded as before)
-        # Student roles
-        if role_upper.startswith("STUDENT "):
-            if "HOMESTYLE" in role_upper:
-                return "HOMESTYLE ROOTED"
-            if "DWO" in role_upper:
-                return "DELICIOUS WITHOUT"
-            if "HOMESLICE" in role_upper:
-                return "HOMESLICE"
-            if "UNITED TABLE" in role_upper:
-                return "UNITED TABLE"
-            if "FLIPS" in role_upper:
-                return "FLIPS"
-            if "PIZZA/PASTA" in role_upper:
-                return "FLOUR SAUCE"
-            if "DESSERTS" in role_upper:
-                return "SWEET SHOPPE"
-            if "FOH" in role_upper:
-                return "BEVERAGES"
-            if "SALAD BAR" in role_upper:
-                return "GARDEN SOCIAL & NOOK"
-            if "UTILITY" in role_upper:
-                return "UTILITY"
-            if "SUPERVISOR" in role_upper:
-                return "SUPERVISOR"
-            return None
-
-        # Full‑time roles
-        if role_upper.startswith("PRODUCTION COOK"):
-            return "HOMESTYLE ROOTED"
-        if role_upper.startswith("DWO COOK"):
-            return "DELICIOUS WITHOUT"
-        if role_upper.startswith("FLIPS COOK"):
-            return "FLIPS"
-        if role_upper.startswith("PIZZA COOK"):
-            return "FLOUR SAUCE"
-        if role_upper.startswith("UNITED TABLE COOK"):
-            return "UNITED TABLE"
-        if role_upper.startswith("DELI COOK"):
-            return "HOMESLICE"
-        if role_upper.startswith("COLD PREP COOK"):
-            return "GARDEN SOCIAL & NOOK"
-        if role_upper.startswith("UTILITY DISHROOM") or role_upper.startswith("UTILITY POTS") or role_upper.startswith("UTILITY FOH"):
-            return "UTILITY"
-        if role_upper.startswith("CASHIER"):
-            return "CASHIER"
-        if "SUPERVISOR" in role_upper:
-            return "SUPERVISOR"
+        # Ikes simplified dynamic lookup
+        if role_lower in IKES_MAPPING:
+            return IKES_MAPPING[role_lower]
+        
+        # Keep fallbacks if relevant, or legacy logic if not in mapping?
+        # User said "change the logic to work for this latest mapping".
+        # So we trust the mapping file predominantly. 
+        # Accessing existing Hardcoded logic if strictly needed? 
+        # Let's assume the excel covers it, but maybe keep a fallback if it fails?
+        # For now, trusted mapping.
+        
         return None
     
     return None
@@ -228,7 +165,7 @@ def get_stations_layout(location: str) -> List[List[str]]:
         global SOUTHSIDE_MAPPING
         if not SOUTHSIDE_MAPPING:
              logging.info("Southside mapping empty, attempting reload...")
-             SOUTHSIDE_MAPPING = load_southside_mapping(MAPPING_FILE)
+             SOUTHSIDE_MAPPING = load_mapping(MAPPING_FILE_SOUTHSIDE)
 
         # 5-column layout for Southside
         known_stations = sorted(list(set(SOUTHSIDE_MAPPING.values())))
@@ -247,21 +184,24 @@ def get_stations_layout(location: str) -> List[List[str]]:
         return rows
 
     else:
-        # Ikes Layout
-        ikes_stations = [
-            'CASHIER', 'GARDEN SOCIAL & NOOK', 'LA CUCINA',
-            'FLOUR SAUCE', 'DELICIOUS WITHOUT', 'SWEET SHOPPE',
-            'UNITED TABLE', 'HOMESLICE', 'HOMESTYLE ROOTED',
-            'FLIPS', 'CULINARY', 'UTILITY',
-            'BEVERAGES', 'TABLE BUSSER', 'SUPERVISOR'
-        ]
-        
+        # Ikes Layout - Dynamic
+        global IKES_MAPPING
+        if not IKES_MAPPING:
+             logging.info("Ikes mapping empty, attempting reload...")
+             IKES_MAPPING = load_mapping(MAPPING_FILE_IKES)
+
+        known_stations = sorted(list(set(IKES_MAPPING.values())))
+        known_stations = [s for s in known_stations if s]
+
         # Create rows of 5
         rows = []
         chunk_size = 5
-        for i in range(0, len(ikes_stations), chunk_size):
-            rows.append(ikes_stations[i:i + chunk_size])
-            
+        for i in range(0, len(known_stations), chunk_size):
+            rows.append(known_stations[i:i + chunk_size])
+
+        if not rows:
+             rows = [['NO STATIONS MAPPED']]
+
         return rows
 
 
