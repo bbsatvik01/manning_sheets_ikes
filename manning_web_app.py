@@ -59,6 +59,11 @@ STATIC_ROOT = os.path.join(RESOURCE_DIR, "static")
 if not os.path.isdir(STATIC_ROOT):
     STATIC_ROOT = os.path.join(BASE_DIR, "static")
 
+# Ensure necessary directories exist
+os.makedirs(INPUT_DIR, exist_ok=True)
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(LOG_DIR, exist_ok=True)
+
 # Track outputs generated during this runtime (latest batch only)
 CURRENT_OUTPUTS: List[str] = []
 
