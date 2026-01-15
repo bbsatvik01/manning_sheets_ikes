@@ -66,7 +66,7 @@ LOCATIONS = {
 }
 
 
-from mappings import SOUTHSIDE_MAPPING, IKES_MAPPING
+from mappings import SOUTHSIDE_MAPPING, IKES_MAPPING, SOUTHSIDE_KEYWORDS, IKES_KEYWORDS
 
 def parse_time(time_str: str) -> Optional[float]:
     """Convert a 12‑hour time string into a floating point hour.
@@ -98,24 +98,41 @@ IGNORED_ROLES = {
 
 
 def get_category(role: str, location: str) -> Optional[str]:
-    """Map a job role to a Manning Chart category (station) based on location."""
+    """Map a job role to a Manning Chart category (station) based on location.
+    
+    1. Exact match (case-insensitive) against dictionary.
+    2. Fallback exact matches.
+    3. Fuzzy keyword match.
+    """
     if not role:
         return None
     role_clean = role.strip().replace("\n", "").strip()
     role_lower = role_clean.lower()
 
     if location == "southside":
-        # Southside lookup
+        # 1. Exact lookup
         if role_lower in SOUTHSIDE_MAPPING:
             return SOUTHSIDE_MAPPING[role_lower]
         if role_lower in FALLBACK_MAPPINGS:
             return FALLBACK_MAPPINGS[role_lower]
+            
+        # 2. Fuzzy/Keyword lookup
+        for keyword, station in SOUTHSIDE_KEYWORDS:
+            if keyword in role_lower:
+                return station
+                
         return None
 
     elif location == "ikes":
-        # Ikes simplified dynamic lookup
+        # 1. Exact lookup
         if role_lower in IKES_MAPPING:
             return IKES_MAPPING[role_lower]
+            
+        # 2. Fuzzy/Keyword lookup
+        for keyword, station in IKES_KEYWORDS:
+            if keyword in role_lower:
+                return station
+
         return None
     
     return None
