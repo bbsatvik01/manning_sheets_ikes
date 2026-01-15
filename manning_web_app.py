@@ -59,6 +59,9 @@ STATIC_ROOT = os.path.join(RESOURCE_DIR, "static")
 if not os.path.isdir(STATIC_ROOT):
     STATIC_ROOT = os.path.join(BASE_DIR, "static")
 
+# Track outputs generated during this runtime (latest batch only)
+CURRENT_OUTPUTS: List[str] = []
+
 # Locations configuration
 LOCATIONS = {
     "ikes": {"name": "Ikes", "mapping_needed": False},
