@@ -65,37 +65,8 @@ LOCATIONS = {
     "southside": {"name": "Southside", "mapping_needed": True},
 }
 
-MAPPING_FILE_SOUTHSIDE = os.path.join(BASE_DIR, "Manning sheets mapping soutside.xlsx")
-MAPPING_FILE_IKES = os.path.join(BASE_DIR, "ikes manning mapping.xlsx")
 
-def load_mapping(file_path: str) -> Dict[str, str]:
-    """Load role-to-station mapping from Excel file."""
-    mapping = {}
-    if not os.path.exists(file_path):
-        logging.warning(f"Mapping file not found at {file_path}. Using empty mapping.")
-        return mapping
-    
-    try:
-        wb = openpyxl.load_workbook(file_path, data_only=True)
-        for sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-            for row in ws.iter_rows(values_only=True):
-                if not row or len(row) < 2:
-                    continue
-                role = str(row[0]).strip().replace("\n", "").strip()
-                station = str(row[1]).strip().replace("\n", "").strip()
-                if role and station:
-                    mapping[role.lower()] = station.upper()
-        logging.info(f"Loaded {len(mapping)} mappings from {file_path}")
-    except Exception as e:
-        logging.error(f"Error loading mapping file: {e}")
-    
-    return mapping
-
-# Global mapping caches
-SOUTHSIDE_MAPPING = load_mapping(MAPPING_FILE_SOUTHSIDE)
-IKES_MAPPING = load_mapping(MAPPING_FILE_IKES)
-
+from mappings import SOUTHSIDE_MAPPING, IKES_MAPPING
 
 def parse_time(time_str: str) -> Optional[float]:
     """Convert a 12‑hour time string into a floating point hour.
@@ -145,14 +116,6 @@ def get_category(role: str, location: str) -> Optional[str]:
         # Ikes simplified dynamic lookup
         if role_lower in IKES_MAPPING:
             return IKES_MAPPING[role_lower]
-        
-        # Keep fallbacks if relevant, or legacy logic if not in mapping?
-        # User said "change the logic to work for this latest mapping".
-        # So we trust the mapping file predominantly. 
-        # Accessing existing Hardcoded logic if strictly needed? 
-        # Let's assume the excel covers it, but maybe keep a fallback if it fails?
-        # For now, trusted mapping.
-        
         return None
     
     return None
@@ -161,12 +124,6 @@ def get_category(role: str, location: str) -> Optional[str]:
 def get_stations_layout(location: str) -> List[List[str]]:
     """Return the grid layout of stations for the Manning Sheet."""
     if location == "southside":
-        # Ensure mapping is loaded
-        global SOUTHSIDE_MAPPING
-        if not SOUTHSIDE_MAPPING:
-             logging.info("Southside mapping empty, attempting reload...")
-             SOUTHSIDE_MAPPING = load_mapping(MAPPING_FILE_SOUTHSIDE)
-
         # 5-column layout for Southside
         known_stations = sorted(list(set(SOUTHSIDE_MAPPING.values())))
         # Filter out None or empty
@@ -185,11 +142,6 @@ def get_stations_layout(location: str) -> List[List[str]]:
 
     else:
         # Ikes Layout - Dynamic
-        global IKES_MAPPING
-        if not IKES_MAPPING:
-             logging.info("Ikes mapping empty, attempting reload...")
-             IKES_MAPPING = load_mapping(MAPPING_FILE_IKES)
-
         known_stations = sorted(list(set(IKES_MAPPING.values())))
         known_stations = [s for s in known_stations if s]
 
