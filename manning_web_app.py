@@ -224,6 +224,12 @@ def get_category(role: str, location: str) -> Optional[str]:
 def get_stations_layout(location: str) -> List[List[str]]:
     """Return the grid layout of stations for the Manning Sheet."""
     if location == "southside":
+        # Ensure mapping is loaded
+        global SOUTHSIDE_MAPPING
+        if not SOUTHSIDE_MAPPING:
+             logging.info("Southside mapping empty, attempting reload...")
+             SOUTHSIDE_MAPPING = load_southside_mapping(MAPPING_FILE)
+
         # 5-column layout for Southside
         known_stations = sorted(list(set(SOUTHSIDE_MAPPING.values())))
         # Filter out None or empty
@@ -630,7 +636,17 @@ def index() -> str:
         location = "ikes"
     
     show_history = view_mode == "history"
-    files = list_output_files() if show_history else CURRENT_OUTPUTS.copy()
+    all_files = list_output_files() if show_history else CURRENT_OUTPUTS.copy()
+    
+    # Filter files by location
+    if location == "southside":
+        files = [f for f in all_files if "_Southside_" in f]
+    else:
+        # Ikes files might explicitly say Ikes or might be legacy (no location name?)
+        # Current logic adds location_name to filename: "{date_part}_{location_name}_Manning_sheet..."
+        # So Ikes files should have "_Ikes_".
+        files = [f for f in all_files if "_Ikes_" in f or ("_Southside_" not in f)]
+    
     total_generated = len(CURRENT_OUTPUTS)
     latest_file = CURRENT_OUTPUTS[-1] if CURRENT_OUTPUTS else None
     assets = asset_urls()
