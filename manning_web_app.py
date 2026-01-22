@@ -168,7 +168,7 @@ def get_stations_layout(location: str) -> List[List[str]]:
     else:
         # Ikes Layout - Dynamic
         known_stations = sorted(list(set(IKES_MAPPING.values())))
-        known_stations = [s for s in known_stations if s]
+        known_stations = [s for s in known_stations if s and s != "NONE"]
 
         # Create rows of 5
         rows = []
@@ -225,9 +225,9 @@ def process_schedule_file(file_path: str, output_dir: str, location: str = "ikes
     else:
         # Ikes default shifts
         shifts = [
-            {'name': '6am-2pm', 'meal_periods': 'B BR', 'lower': 6.0, 'upper': 14.0},
-            {'name': '2pm-11pm', 'meal_periods': 'D', 'lower': 14.0, 'upper': 22.0},
-            {'name': '10pm-6am', 'meal_periods': 'OVNT', 'lower': 22.0, 'upper': 24.0}, 
+            {'name': '5am-2pm', 'meal_periods': 'B BR', 'lower': 5.0, 'upper': 14.0},
+            {'name': '2pm-10pm', 'meal_periods': 'D', 'lower': 14.0, 'upper': 22.0},
+            {'name': '10pm-5am', 'meal_periods': 'OVNT', 'lower': 22.0, 'upper': 24.0}, 
         ]
 
     # Chart row layout
@@ -331,7 +331,7 @@ def process_schedule_file(file_path: str, output_dir: str, location: str = "ikes
                         # Handle potential edge case where 11:30pm might be exactly 23.5
                 else:
                     # Ikes logic (legacy behavior preservation)
-                    if 6 <= start_time < 14:
+                    if 5 <= start_time < 14:
                         shift_index = 0
                     elif 14 <= start_time < 22:
                         shift_index = 1

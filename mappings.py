@@ -103,7 +103,7 @@ IKES_MAPPING = {'cashier am': 'CASHIER',
  'flips cook pm2': 'GRILL',
  'flips cook pm3': 'GRILL',
  'flips cook pm4': 'GRILL',
- 'none': 'NONE',
+
  'pizza cook am': 'PIZZA',
  'pizza cook pm': 'PIZZA',
  'production cook am1': 'HOMESTYLE',
