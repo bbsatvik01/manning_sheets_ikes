@@ -105,6 +105,24 @@ IGNORED_ROLES = {
 }
 
 
+def validate_file_location(file_path: str, location: str) -> bool:
+    """Validate that the uploaded file matches the expected location."""
+    try:
+        wb = openpyxl.load_workbook(file_path, data_only=True)
+        ws = wb.active
+        header_val = str(ws['A1'].value or "")
+        
+        if location == "ikes":
+            return "GMU DH-Ike" in header_val
+        elif location == "southside":
+            return "GMU DH-Southside" in header_val
+            
+        return False
+    except Exception as e:
+        logging.error(f"Validation error for {file_path}: {e}")
+        return False
+
+
 def get_category(role: str, location: str) -> Optional[str]:
     """Map a job role to a Manning Chart category (station) based on location.
     
@@ -388,16 +406,40 @@ def process_schedule_file(file_path: str, output_dir: str, location: str = "ikes
                     hcell.border = border
                 
                 data_row = row_ptr + 1
+                
+                max_lines = 1
                 for col, label in enumerate(group, start=1):
                     dcell = sheet.cell(row=data_row, column=col)
                     items = shift_data[idx_shift].get(label, [])
-                    dcell.value = '\n\n'.join(items) if items else ''
+                    cell_text = '\n\n'.join(items) if items else ''
+                    dcell.value = cell_text
                     dcell.alignment = Alignment(horizontal='left', vertical='top', wrap_text=True)
                     dcell.border = border
-                
+                    
+                    # Calculate lines for this cell
+                    # We estimate lines based on newlines and roughly 30 chars per line (column width 30)
+                    lines_in_text = cell_text.split('\n')
+                    estimated_lines = 0
+                    for line in lines_in_text:
+                        # Simple wrap estimation: 1 + length // 35
+                        estimated_lines += 1 + max(0, (len(line) - 1) // 35)
+                    
+                    if estimated_lines > max_lines:
+                        max_lines = estimated_lines
+
                 sheet.row_dimensions[row_ptr].height = 20
-                sheet.row_dimensions[data_row].height = 60
+                # Base height approx 15pts per line, minimum 60
+                new_height = max(60, max_lines * 15)
+                sheet.row_dimensions[data_row].height = new_height
+                
                 row_ptr += 2
+
+            # Print Settings
+            sheet.page_setup.orientation = sheet.ORIENTATION_LANDSCAPE
+            sheet.page_setup.paperSize = sheet.PAPERSIZE_LETTER
+            sheet.page_setup.fitToPage = True
+            sheet.page_setup.fitToHeight = 1
+            sheet.page_setup.fitToWidth = 1
                 
         out_filename = f"{date_part}_{location_name}_Manning_sheet_{generation_stamp}.xlsx"
         out_path = os.path.join(output_dir, out_filename)
@@ -451,19 +493,75 @@ BASE_CSS = """
     border-color: transparent;
     box-shadow: 0px 0px 20px 0px rgba(186, 84, 245, 0.5);
 }
+/* Toast Notifications */
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.toast-notification {
+    min-width: 300px;
+    background: #2b3553;
+    color: #ffffff;
+    padding: 15px 20px;
+    border-radius: 5px;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+    border-left: 5px solid #e14eca;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    opacity: 0;
+    transform: translateX(50px);
+    animation: slideIn 0.3s forwards;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.toast-notification.success {
+    border-left-color: #00f2c3; /* Green/Teal for success */
+}
+.toast-notification.error {
+    border-left-color: #fd5d93; /* Red/Pink for error */
+}
+.toast-notification .close-btn {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.6);
+    cursor: pointer;
+    font-size: 1.2rem;
+    line-height: 1;
+    margin-left: 10px;
+}
+.toast-notification .close-btn:hover {
+    color: #fff;
+}
+@keyframes slideIn {
+    to {
+        opacity: 1;
+        transform: translateX(0);
+    }
+}
+.toast-notification.hide {
+    opacity: 0;
+    transform: translateX(50px);
+}
 """
 
 
 def asset_urls() -> Dict[str, str]:
     """Return URLs for local CSS/JS assets served from /static."""
+    import time
+    v = int(time.time())
     return {
-        "css_black": url_for("static", filename="assets/css/black-dashboard.min.css"),
-        "css_custom": url_for("static", filename="assets/css/custom.css"),
-        "css_icons": url_for("static", filename="assets/css/nucleo-icons.css"),
-        "js_jquery": url_for("static", filename="assets/js/core/jquery.min.js"),
-        "js_popper": url_for("static", filename="assets/js/core/popper.min.js"),
-        "js_bootstrap": url_for("static", filename="assets/js/core/bootstrap.min.js"),
-        "js_black": url_for("static", filename="assets/js/black-dashboard.min.js"),
+        "css_black": url_for("static", filename="assets/css/black-dashboard.min.css") + f"?v={v}",
+        "css_custom": url_for("static", filename="assets/css/custom.css") + f"?v={v}",
+        "css_icons": url_for("static", filename="assets/css/nucleo-icons.css") + f"?v={v}",
+        "js_jquery": url_for("static", filename="assets/js/core/jquery.min.js") + f"?v={v}",
+        "js_popper": url_for("static", filename="assets/js/core/popper.min.js") + f"?v={v}",
+        "js_bootstrap": url_for("static", filename="assets/js/core/bootstrap.min.js") + f"?v={v}",
+        "js_black": url_for("static", filename="assets/js/black-dashboard.min.js") + f"?v={v}",
     }
 
 
@@ -579,122 +677,197 @@ def index() -> str:
 <head>
     <meta charset="utf-8">
     <title>{{ title }}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ css_black }}">
     <link rel="stylesheet" href="{{ css_custom }}">
     <link rel="stylesheet" href="{{ css_icons }}">
     <style>{{ base_css }}</style>
 </head>
 <body class="app-shell">
-<main class="app-content single-column">
-        {% if flashes %}
-        <div class="toast-stack">
-            {% for category, message in flashes %}
-            <div class="toast {{ category }}">{{ message }}</div>
-            {% endfor %}
+<div class="app-surface">
+    <!-- Toast Container -->
+    <div class="toast-container">
+        {% for category, message in flashes %}
+        <div class="toast-notification {{ category }}">
+            <span>{{ message }}</span>
+            <button class="close-btn" onclick="this.parentElement.classList.add('hide'); setTimeout(() => this.parentElement.remove(), 300);">&times;</button>
         </div>
-        {% endif %}
-        <div class="page-heading">
-            <h1>Manning Chart Generator</h1>
+        {% endfor %}
+    </div>
+    <!-- Sidebar Navigation -->
+    <nav class="app-sidebar">
+        <div class="brand">
+            <i class="tim-icons icon-chart-pie-36"></i> ManningGen
         </div>
+        <p class="muted mb-4">Staffing automation for<br><strong>{{ location_name }}</strong></p>
         
-        <div class="location-toggle">
-            <div class="btn-group" role="group" aria-label="Location Toggle">
-                <a href="{{ url_for('index', location='ikes', view=view_mode) }}" class="btn btn-{{ 'primary' if location == 'ikes' else 'secondary' }}">Manning Sheets Ikes</a>
-                <a href="{{ url_for('index', location='southside', view=view_mode) }}" class="btn btn-{{ 'primary' if location == 'southside' else 'secondary' }}">Manning Sheets Southside</a>
-            </div>
+        <div class="location-nav">
+            <p class="nav-label">Select Location</p>
+            <a href="{{ url_for('index', location='ikes', view=view_mode) }}" class="nav-item {{ 'active' if location == 'ikes' else '' }}">
+                <i class="tim-icons icon-istanbul"></i> Ikes Dining
+            </a>
+            <a href="{{ url_for('index', location='southside', view=view_mode) }}" class="nav-item {{ 'active' if location == 'southside' else '' }}">
+                <i class="tim-icons icon-bank"></i> Southside
+            </a>
         </div>
 
-        <div class="hero-row">
-            <div class="hero-cell col-3 hero-desc">
-                <p class="eyebrow">Automated coverage</p>
-                <h2>{{ title }}</h2>
-                <p class="muted">Upload the latest <strong>.xlsx</strong> schedule for <strong>{{ location_name }}</strong>. We keep the raw file in <code>input_my_staff_schedule</code> and save processed shifts inside <code>manning_sheets</code>.</p>
-            </div>
-            <div class="hero-cell col-6 hero-upload">
-                <p class="eyebrow text-center">Upload schedule</p>
-                <h2 class="text-center">Generate new Manning sheets</h2>
-                <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data" class="upload-form centered">
-                    <input type="hidden" name="location" value="{{ location }}">
-                    <label for="file-input" class="muted">Drop or browse for a MyStaff Excel export (.xlsx)</label>
-                    <input id="file-input" type="file" name="file" accept=".xlsx" required class="app-file-input">
-                    <button type="submit" class="btn btn-primary btn-gradient">Upload &amp; Generate Charts</button>
-                </form>
-            </div>
-            <div class="hero-cell col-3 hero-stats">
-                <div class="metric">
-                    <span>Total charts</span>
-                    <strong>{{ total_generated }}</strong>
-                </div>
-                <div class="metric">
-                    <span>Latest workbook</span>
-                    <strong>{{ latest_file or "N/A" }}</strong>
-                </div>
-                <div class="hero-actions">
-                    <a class="btn btn-info hero-log" href="{{ url_for('view_log') }}">View processing log</a>
-                    <a class="btn btn-outline hero-log" href="{{ url_for('view_log') }}" target="_blank">Open log in new tab</a>
-                </div>
-            </div>
+        <div class="sidebar-footer mt-auto">
+             <p class="small text-muted text-center">v2.2 Nano Banana</p>
         </div>
+    </nav>
 
-        <section class="app-card">
-            <div class="section-header">
-                <div>
-                    <p class="eyebrow">{{ "History" if show_history else "Session files" }}</p>
-                    <h2>{{ "Generated Manning Sheets History" if show_history else "Your generated Manning Sheets" }}</h2>
-                    <p class="muted note">
-                        {% if show_history %}
-                        All previously generated workbooks are listed here.
+    <!-- Main Content -->
+    <main class="app-content">
+        <div class="container-fluid p-0">
+            <!-- Header Row -->
+            <div class="row mb-4 align-items-center">
+                <div class="col-12">
+                     <h2 class="page-title">{{ title }}</h2>
+                     <p class="text-muted">Generate compliant manning charts from MyStaff schedules.</p>
+                </div>
+            </div>
+
+            <div class="row g-4 mb-5">
+                <!-- Usage Instructions Card -->
+                <div class="col-12 col-xl-5">
+                    <div class="app-card h-100">
+                        <h4 class="mb-3">Instructions</h4>
+                        <ol class="instruction-list ps-3">
+                            <li class="mb-2">Visit <strong>MyStaff</strong> and select the weekly schedule and click on print.</li>
+                            <li class="mb-2">Switch view to <strong>Task</strong> (top right corner).</li>
+                            <li class="mb-2">Click on <strong>Print</strong> (or the Excel export button) to download the file.</li>
+                            <li class="mb-2">Upload the file here and click <strong>Generate Charts</strong>.</li>
+                            <li>Your charts will appear below.</li>
+                        </ol>
+                    </div>
+                </div>
+
+                <!-- Upload Card -->
+                <div class="col-12 col-xl-7">
+                     <div class="app-card h-100 hero-gradient">
+                        <div class="d-flex align-items-center justify-content-between mb-4">
+                            <div>
+                                <h3 class="mb-1 text-white">Create New Manning Sheets</h3>
+                                <p class="opacity-75 mb-0">Upload MyStaff export (.xlsx)</p>
+                            </div>
+                            <div class="icon-shape bg-white text-primary rounded-circle shadow-sm d-flex align-items-center justify-content-center" style="width: 40px; height: 40px;">
+                                <i class="tim-icons icon-cloud-upload-94" style="font-size: 1.2rem;"></i>
+                            </div>
+                        </div>
+                          
+                        <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data" class="upload-form">
+                            <input type="hidden" name="location" value="{{ location }}">
+                            <div class="file-drop-area w-100 mb-3">
+                                <span class="choose-file-btn mb-2">Choose File</span>
+                                <span class="file-msg small text-white-50">or drag and drop file here</span>
+                                <input class="file-input" type="file" name="file" accept=".xlsx" required>
+                            </div>
+                            <button type="submit" class="btn btn-white w-100 btn-lg fw-bold">Generate Charts &rarr;</button>
+                        </form>
+                     </div>
+                </div>
+            </div>
+
+            <!-- Stats Row -->
+            <div class="row g-4 mb-4">
+                 <div class="col-6 col-md-3">
+                    <div class="app-card text-center p-3">
+                        <h2 class="mb-0 text-primary">{{ total_generated }}</h2>
+                        <small class="text-muted text-uppercase">Total Charts</small>
+                    </div>
+                 </div>
+                 <div class="col-6 col-md-9">
+                    <div class="app-card p-3 d-flex align-items-center justify-content-between position-relative overflow-hidden">
+                        <div style="min-width: 0;">
+                             <small class="text-muted text-uppercase d-block">Latest Workbook</small>
+                             <span class="text-white text-truncate d-block" style="max-width: 100%;">{{ latest_file or "No files yet" }}</span>
+                        </div>
+                        <div class="icon-shape bg-primary text-white rounded-circle shadow-sm flex-shrink-0 ms-3 d-flex align-items-center justify-content-center" style="width:40px;height:40px;">
+                            <i class="tim-icons icon-calendar-60" style="font-size: 1rem;"></i>
+                        </div>
+                    </div>
+                 </div>
+            </div>
+
+            <!-- History Section -->
+            <div class="row">
+                <div class="col-12">
+                    <div class="app-card">
+                        <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+                             <h4 class="mb-0">{{ "History Archive" if show_history else "Recent Sessions" }}</h4>
+                             <div class="btn-group">
+                                 <a href="{{ url_for('index', view='current', location=location) }}" class="btn btn-sm btn-{{ 'primary' if not show_history else 'simple' }}">Current</a>
+                                 <a href="{{ url_for('index', view='history', location=location) }}" class="btn btn-sm btn-{{ 'primary' if show_history else 'simple' }}">History</a>
+                             </div>
+                        </div>
+                        
+                        {% if files %}
+                        <div class="table-responsive">
+                            <table class="table tablesorter align-middle" id="">
+                                <thead class="text-primary">
+                                    <tr>
+                                        <th>Generated File</th>
+                                        <th class="text-right">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for fname in files %}
+                                    <tr>
+                                        <td>
+                                            <div class="d-flex align-items-center gap-2">
+                                                <i class="tim-icons icon-single-copy-04 text-muted"></i>
+                                                <span class="fw-bold">{{ fname }}</span>
+                                            </div>
+                                        </td>
+                                        <td class="text-right">
+                                            <div class="btn-group">
+                                                <a href="{{ url_for('view_file', filename=fname) }}" class="btn btn-sm btn-info">
+                                                    <i class="tim-icons icon-zoom-split"></i> View
+                                                </a>
+                                                <a href="{{ url_for('download_file', filename=fname) }}" class="btn btn-sm btn-success">
+                                                    <i class="tim-icons icon-cloud-download-93"></i> Download
+                                                </a>
+                                                <a href="{{ url_for('view_file', filename=fname) }}?print=true" target="_blank" class="btn btn-sm btn-warning">
+                                                    <i class="tim-icons icon-print"></i> Print
+                                                </a>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
                         {% else %}
-                        Files listed here were created in this session. All workbooks are still stored in <code>manning_sheets</code>.
+                        <div class="text-center py-5">
+                            <h5 class="text-muted">No charts found</h5>
+                        </div>
                         {% endif %}
-                    </p>
-                </div>
-                <div class="section-actions">
-                    <a class="btn btn-sm btn-outline" href="{{ url_for('index', view='history', location=location) }}">History</a>
-                    <a class="btn btn-sm btn-gradient" href="{{ url_for('index', view='current', location=location) }}">Current</a>
+                    </div>
                 </div>
             </div>
-            {% if files %}
-            <div class="table-scroll">
-                <table class="file-table">
-                    <thead>
-                        <tr>
-                            <th>Workbook</th>
-                            <th style="width:280px;">Actions</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    {% for fname in files %}
-                        <tr>
-                            <td><span class="filename">{{ fname }}</span></td>
-                            <td class="action-stack">
-                                <a class="file-action inline" href="{{ url_for('download_file', filename=fname) }}">Download</a>
-                                <a class="file-action inline" href="{{ url_for('view_file', filename=fname) }}">View online</a>
-                            </td>
-                        </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-            {% else %}
-            <p class="file-empty">
-                {% if show_history %}
-                No historical files found yet.
-                {% else %}
-                No Manning charts yet. Upload a schedule to kick things off.
-                {% endif %}
-            </p>
-            {% endif %}
-        </section>
+            
+        </div>
     </main>
+</div>
+
 <script src="{{ js_jquery }}"></script>
 <script src="{{ js_popper }}"></script>
 <script src="{{ js_bootstrap }}"></script>
 <script src="{{ js_black }}"></script>
+<script>
+    $('.file-input').on('change', function() {
+      var filesCount = $(this)[0].files.length;
+      var textContainer = $(this).prev();
+      if (filesCount === 1) {
+        textContainer.text($(this).val().split('\\\\').pop());
+      } else {
+        textContainer.text('or drag and drop file here');
+      }
+    });
+</script>
 </body>
 </html>
         """,
@@ -722,6 +895,7 @@ def upload() -> str:
     if 'file' not in request.files:
         flash("No file selected.", "error")
         return redirect(url_for('index', location=location))
+    
     file = request.files['file']
     if file.filename == '':
         flash("Please choose a file before uploading.", "error")
@@ -735,6 +909,19 @@ def upload() -> str:
     input_path = os.path.join(INPUT_DIR, safe_filename)
     file.save(input_path)
     logging.info(f"Uploaded schedule saved to '{input_path}'.")
+    
+    # Validate location
+    if not validate_file_location(input_path, location):
+        # Remove the invalid file
+        try:
+            os.remove(input_path)
+        except OSError:
+            pass
+            
+        location_name = LOCATIONS.get(location, {}).get("name", location)
+        flash(f'Please upload "{location_name}" schedule by following the instructions', "error")
+        return redirect(url_for('index', location=location))
+
     # Process the uploaded schedule
     outputs = process_schedule_file(input_path, OUTPUT_DIR, location=location)
     if outputs:
@@ -767,15 +954,28 @@ def view_file(filename: str):
         return f"Error reading workbook: {exc}", 500
 
     sheet_tables: List[Dict[str, Any]] = []
+    
+    # Attempt to deduce location from filename for the Title
+    location_title = "Manning Sheets"
+    if "_Ikes_" in filename:
+        location_title = "Manning Sheets - Ikes Dining"
+    elif "_Southside_" in filename:
+        location_title = "Manning Sheets - Southside"
+
     for sheet_name in wb.sheetnames:
         ws = wb[sheet_name]
         sheet_data = build_sheet_structure(ws)
+        
+        # Extract metadata from A2 if available
+        header_meta = ws['A2'].value if ws['A2'].value else ""
+        
         sheet_tables.append(
             {
                 "name": sheet_name,
                 "stations": sheet_data["stations"],
                 "total_entries": sheet_data["total_entries"],
                 "excel_sections": sheet_data["excel_sections"],
+                "header_metadata": header_meta
             }
         )
 
@@ -786,171 +986,167 @@ def view_file(filename: str):
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <title>Viewing {{ filename }}</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600&display=swap">
+    <title>{{ filename }} - Viewer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="{{ css_black }}">
     <link rel="stylesheet" href="{{ css_custom }}">
     <link rel="stylesheet" href="{{ css_icons }}">
     <style>{{ base_css }}</style>
 </head>
-<body class="viewer-shell">
-<div class="viewer-content">
-    <div class="viewer-actions">
-        <a class="file-action" href="{{ url_for('index') }}">&larr; Back to dashboard</a>
-        <a class="btn btn-primary btn-gradient" href="{{ url_for('download_file', filename=filename) }}">Download workbook</a>
-    </div>
-    <section class="app-card viewer-hero">
-        <div>
-            <p class="eyebrow">Online preview</p>
-            <h1>{{ filename }}</h1>
-            <p class="muted">Review each shift tab without leaving the browser. Use the shift toggles to jump between dayparts or print the active view.</p>
+<body class="app-shell viewer-shell">
+<div class="app-surface">
+    <!-- Sidebar Navigation (Same as Index) -->
+    <nav class="app-sidebar">
+        <div class="brand">
+            <i class="tim-icons icon-chart-pie-36"></i> ManningGen
         </div>
-        <div class="viewer-meta">
-            <div class="stat-chip">
-                <span>Total sheets</span>
-                <strong>{{ sheets|length }}</strong>
-            </div>
-            <div class="stat-chip">
-                <span>Served from</span>
-                <strong>manning_sheets</strong>
-            </div>
+        <p class="muted mb-4">Staffing automation for<br><strong>Ikes/Southside</strong></p>
+        
+        <div class="location-nav">
+             <a href="{{ url_for('index', location='ikes') }}" class="nav-item">
+                <i class="tim-icons icon-istanbul"></i> Ikes Dining
+            </a>
+            <a href="{{ url_for('index', location='southside') }}" class="nav-item">
+                <i class="tim-icons icon-bank"></i> Southside
+            </a>
         </div>
-    </section>
-    <div class="viewer-tabs">
-        {% for table in sheets %}
-            <button class="shift-btn{% if loop.first %} active{% endif %}" type="button" data-shift-target="shift-{{ loop.index0 }}">
-                <span>{{ table.name }}</span>
-                <small>{{ table.total_entries }} assignment{{ "s" if table.total_entries != 1 else "" }}</small>
-            </button>
-        {% endfor %}
-    </div>
-    <div class="shift-panels">
-    {% for table in sheets %}
-        <section class="app-card sheet-card shift-panel{% if loop.first %} active{% endif %}" id="shift-{{ loop.index0 }}">
-            <div class="sheet-header">
+        
+        <div class="mt-4 px-2">
+            <a href="{{ url_for('index') }}" class="btn btn-sm btn-simple text-white border-white w-100">
+                <i class="tim-icons icon-minimal-left"></i> Back to Dashboard
+            </a>
+        </div>
+
+        <div class="sidebar-footer mt-auto">
+             <p class="small text-muted text-center">v2.2 Nano Banana</p>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="app-content">
+        <div class="container-fluid p-0">
+             <!-- Viewer Header -->
+             <div class="viewer-actions p-4 mb-4 rounded d-flex justify-content-between align-items-center bg-dark shadow-sm d-print-none">
+                <div class="d-flex align-items-center gap-3">
+                     <div class="icon-shape bg-info text-white rounded-circle shadow-sm d-flex align-items-center justify-content-center flex-shrink-0" style="width: 40px; height: 40px;">
+                        <i class="tim-icons icon-paper"></i>
+                     </div>
+                     <div>
+                         <h4 class="mb-0 text-white">{{ filename }}</h4>
+                         <small class="text-muted">Viewing generated workbook</small>
+                     </div>
+                </div>
                 <div>
-                    <p class="eyebrow">Shift tab</p>
-                    <h2>{{ table.name }}</h2>
-                </div>
-                <div class="panel-actions">
-                    <span class="sheet-chip">{{ table.total_entries }} assignment{{ "s" if table.total_entries != 1 else "" }}</span>
-                    <button type="button" class="btn btn-sm btn-ghost" data-table-target="table-{{ loop.index0 }}">Show table view</button>
-                    <button type="button" class="btn btn-sm btn-gradient" data-print-target="shift-{{ loop.index0 }}">Print Excel View</button>
+                     <a href="{{ url_for('download_file', filename=filename) }}" class="btn btn-success btn-sm me-2"><i class="tim-icons icon-cloud-download-93"></i> Download</a>
+                     <button onclick="handlePrint()" class="btn btn-warning btn-sm"><i class="tim-icons icon-print"></i> Print All Shifts</button>
                 </div>
             </div>
-            <div class="excel-view">
-                <p class="eyebrow">Excel layout</p>
-                <div style="overflow-x: auto;">
-                    <table class="excel-table">
-                        {% for block in table.excel_sections %}
-                            <tr>
-                                {% for header in block.headers %}
-                                    <th>{{ header }}</th>
+
+            <!-- Tabs -->
+            <div class="viewer-tabs mb-4 text-center d-print-none">
+                {% for table in sheets %}
+                <button class="shift-btn {{ 'active' if loop.first else '' }}" onclick="showSheet('{{ table.name }}', this)">
+                    {{ table.name }}
+                </button>
+                {% endfor %}
+            </div>
+
+            <!-- Sheets -->
+            {% for table in sheets %}
+            <div id="sheet-{{ table.name }}" class="shift-panel {{ 'active' if loop.first else '' }}">
+                <div class="sheet-card">
+                     <!-- Print Header -->
+                     <div class="print-header d-none d-print-block mb-3 text-center border-bottom border-dark pb-2">
+                         <h2 class="mb-1">{{ location_title }}</h2>
+                         <h3 class="mb-1">{{ table.name }}</h3>
+                         <p class="mb-0 text-muted small" style="white-space: pre-wrap;">{{ table.header_metadata }}</p>
+                     </div>
+                     
+                    <div class="excel-view">
+                        <div class="table-responsive">
+                            <table class="excel-table">
+                                {% for block in table.excel_sections %}
+                                    <tr>
+                                        {% for header in block.headers %}
+                                            <th>{{ header }}</th>
+                                        {% endfor %}
+                                    </tr>
+                                    <tr>
+                                        {% for cell in block.cells %}
+                                            <td>{% if cell %}{{ cell.replace('\\n', '<br>')|safe }}{% else %}&nbsp;{% endif %}</td>
+                                        {% endfor %}
+                                    </tr>
                                 {% endfor %}
-                            </tr>
-                            <tr>
-                                {% for cell in block.cells %}
-                                    <td>{% if cell %}{{ cell.replace('\\n', '<br>')|safe }}{% else %}&nbsp;{% endif %}</td>
-                                {% endfor %}
-                            </tr>
-                        {% endfor %}
-                    </table>
+                            </table>
+                        </div>
+                    </div>
                 </div>
             </div>
-            <div class="table-scroll table-view" id="table-{{ loop.index0 }}">
-                <table class="viewer-table tidy">
-                    <thead>
-                        <tr>
-                            <th>Station</th>
-                            <th>Team member</th>
-                            <th>Shift</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    {% for station in table.stations %}
-                        {% if station.entries %}
-                            {% for entry in station.entries %}
-                            <tr>
-                                {% if loop.first %}
-                                <td rowspan="{{ station.entries|length }}">{{ station.station }}</td>
-                                {% endif %}
-                                <td>{{ entry.name }}</td>
-                                <td>{{ entry.time or "—" }}</td>
-                            </tr>
-                            {% endfor %}
-                        {% else %}
-                            <tr>
-                                <td>{{ station.station }}</td>
-                                <td colspan="2" class="muted">No assignments scheduled</td>
-                            </tr>
-                        {% endif %}
-                    {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </section>
-    {% endfor %}
-    </div>
+            {% endfor %}
+        </div>
+    </main>
 </div>
+
 <script src="{{ js_jquery }}"></script>
 <script src="{{ js_popper }}"></script>
 <script src="{{ js_bootstrap }}"></script>
 <script src="{{ js_black }}"></script>
 <script>
-document.addEventListener('DOMContentLoaded', () => {
-    const buttons = Array.from(document.querySelectorAll('[data-shift-target]'));
-    const panels = Array.from(document.querySelectorAll('.shift-panel'));
-    const activate = (targetId) => {
-        panels.forEach(panel => panel.classList.toggle('active', panel.id === targetId));
-        buttons.forEach(btn => btn.classList.toggle('active', btn.dataset.shiftTarget === targetId));
-    };
-    buttons.forEach(btn => {
-        btn.addEventListener('click', () => activate(btn.dataset.shiftTarget));
+function showSheet(name, btn) {
+    document.querySelectorAll('.shift-panel').forEach(el => el.classList.remove('active'));
+    document.querySelectorAll('.shift-btn').forEach(el => el.classList.remove('active'));
+    document.getElementById('sheet-' + name).classList.add('active');
+    btn.classList.add('active');
+}
+
+function handlePrint() {
+    // Auto-scale to fit landscape page (approx 1000px safe width)
+    const MAX_WIDTH = 1050; 
+    let maxTableWidth = 0;
+    
+    // Find widest table
+    document.querySelectorAll('.excel-table').forEach(tbl => {
+        if (tbl.offsetWidth > maxTableWidth) maxTableWidth = tbl.offsetWidth;
     });
-    const printButtons = Array.from(document.querySelectorAll('[data-print-target]'));
-    printButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const panel = document.getElementById(btn.dataset.printTarget);
-            if (!panel) {
-                return;
-            }
-            const excelView = panel.querySelector('.excel-view');
-            if (!excelView) {
-                return;
-            }
-            const printWindow = window.open('', '', 'width=900,height=700');
-            if (!printWindow) {
-                return;
-            }
-            printWindow.document.write('<html><head><title>Print Shift</title>');
-            printWindow.document.write('<style>@page{size:landscape;margin:10mm;} body{font-family:Poppins,Segoe UI,sans-serif;padding:18px;font-size:12px;} table{width:100%;border-collapse:collapse;table-layout:fixed;} th,td{border:1px solid #000;padding:6px;vertical-align:top;word-break:break-word;} th{background:#f0f0f0;text-transform:uppercase;font-size:0.75rem;} </style>');
-            printWindow.document.write('</head><body>');
-            printWindow.document.write(`<h2>${panel.querySelector('h2')?.textContent ?? ''}</h2>`);
-            printWindow.document.write(excelView.innerHTML);
-            printWindow.document.write('</body></html>');
-            printWindow.document.close();
-            printWindow.focus();
-            printWindow.print();
-            printWindow.close();
-        });
-    });
-    const tableButtons = Array.from(document.querySelectorAll('[data-table-target]'));
-    tableButtons.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const tableView = document.getElementById(btn.dataset.tableTarget);
-            if (!tableView) {
-                return;
-            }
-            const isVisible = tableView.classList.toggle('visible');
-            btn.textContent = isVisible ? 'Hide table view' : 'Show table view';
-        });
-    });
-    if (buttons.length) {
-        activate(buttons[0].dataset.shiftTarget);
+
+    if (maxTableWidth > MAX_WIDTH) {
+        const scale = MAX_WIDTH / maxTableWidth;
+        document.body.style.zoom = scale;
+    } else {
+        document.body.style.zoom = 1;
     }
+
+    // Small delay to allow render
+    // Small delay to allow render
+    setTimeout(() => {
+        // Reset zoom after print dialog closes using onafterprint
+        window.onafterprint = function() {
+            document.body.style.zoom = 1;
+        };
+        window.print();
+        
+        // Fallback for browsers that might not fire onafterprint reliably or if blocked
+        window.addEventListener('focus', function() {
+             document.body.style.zoom = 1;
+        }, { once: true });
+    }, 100);
+}
+
+const urlParams = new URLSearchParams(window.location.search);
+if (urlParams.get('print')) {
+    handlePrint();
+}
+
+// Auto-dismiss toasts
+document.addEventListener('DOMContentLoaded', () => {
+    const toasts = document.querySelectorAll('.toast-notification');
+    toasts.forEach(toast => {
+        setTimeout(() => {
+            toast.classList.add('hide');
+            setTimeout(() => toast.remove(), 300);
+        }, 5000); // 5 seconds
+    });
 });
 </script>
 </body>
@@ -958,6 +1154,7 @@ document.addEventListener('DOMContentLoaded', () => {
         """,
         filename=filename,
         sheets=sheet_tables,
+        location_title=location_title,
         base_css=BASE_CSS,
         **assets,
     )
